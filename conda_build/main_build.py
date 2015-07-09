@@ -183,6 +183,24 @@ different sets of packages."""
         metavar="R_VER",
         choices=RVersionsCompleter(),
     )
+
+    if sys.platform == 'win32':
+        p.add_argument(
+            '--msvc',
+            action="append",
+            help="""Set the Microsoft Visual Studio Compiler version used by
+            conda build. Can be passed multiple times to build against multiple
+            versions.
+
+            By default, MSVC 9.0 (2008) is used for Python 2.*, and MSVC 10.0 (2010) for Python 3.*
+
+            Please keep in mind that Python 2.* and all extensions are compiled
+            with MSVC 2008 by default. If you wish to build anything with MSVC 2010,
+            you will have to build all packages (including python) with the same version.""",
+            choices=['9.0', '10.0'],
+            metavar="MSVC_VER",
+        )
+
     add_parser_channels(p)
     p.set_defaults(func=execute)
 
@@ -274,14 +292,19 @@ def execute(args, parser):
         assert 'markupsafe' not in sys.modules
         delete_trash(None)
 
+    if sys.platform == 'win32':
+        all_versions['msvc'] = None
+
     conda_version = {
         'python': 'CONDA_PY',
         'numpy': 'CONDA_NPY',
         'perl': 'CONDA_PERL',
         'R': 'CONDA_R',
         }
+    if sys.platform == 'win32':
+        conda_version['msvc'] = 'CONDA_MSVC'
 
-    for lang in ['python', 'numpy', 'perl', 'R']:
+    for lang in all_versions.keys():
         versions = getattr(args, lang)
         if not versions:
             continue

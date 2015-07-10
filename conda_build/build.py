@@ -490,9 +490,12 @@ def test(m, verbose=True, channel_urls=(), override_channels=False):
     # building.
     env.update(environ.get_dict(m, prefix=config.test_prefix))
 
-    # prepend bin (or Scripts) directory
-    env['PATH'] = (join(config.test_prefix, bin_dirname) + os.pathsep +
-                   os.getenv('PATH'))
+    # prepend bin (or Scripts) directories
+    path = [join(config.test_prefix, bin_dirname)]
+    if sys.platform == 'win32':
+        path.append(join(config.test_prefix, 'Library', 'bin'))
+    path.append(os.getenv('PATH'))
+    env['PATH'] = os.pathsep.join(path)
 
     for varname in 'CONDA_PY', 'CONDA_NPY', 'CONDA_PERL':
         env[varname] = str(getattr(config, varname))

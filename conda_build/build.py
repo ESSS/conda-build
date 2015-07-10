@@ -546,7 +546,7 @@ def test(m, verbose=True, channel_urls=(), override_channels=False):
     env = prepend_bin_path(env, config.test_prefix, prepend_prefix=True)
 
     if sys.platform == 'win32':
-        env['PATH'] = config.test_prefix + os.pathsep + env['PATH']
+        env['PATH'] = config.test_prefix + os.pathsep + join(config.test_prefix, 'Library', 'bin') + os.pathsep + env['PATH']
     for varname in 'CONDA_PY', 'CONDA_NPY', 'CONDA_PERL':
         env[varname] = str(getattr(config, varname) or '')
     env['PREFIX'] = config.test_prefix

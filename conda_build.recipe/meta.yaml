@@ -1,12 +1,12 @@
 package:
   name: conda-build
-  version: 1.10alpha.0
+  version: 1.18.2+1
 
 source:
   git_url: ../
 
 build:
-  string: esss
+  string: py27_esss
 
 requirements:
   build:

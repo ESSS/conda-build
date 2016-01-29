@@ -3,6 +3,7 @@ from __future__ import absolute_import, division, print_function
 import os
 import sys
 from os.path import join
+import subprocess
 import multiprocessing
 
 import conda.config as cc
@@ -11,7 +12,6 @@ from conda_build.config import config
 
 from conda_build import source
 from conda_build.scripts import prepend_bin_path
-from conda_build import utils
 
 
 def get_perl_ver():
@@ -49,17 +49,22 @@ def get_git_build_info(src_dir):
     key_name = lambda a: "GIT_DESCRIBE_{}".format(a)
     keys = [key_name("TAG"), key_name("NUMBER"), key_name("HASH")]
     env = {str(key): str(value) for key, value in env.items()}
-    output, _ = utils.execute(["git", "describe", "--tags", "--long", "HEAD"],
-                              env=env)
-    parts = output.strip().rsplit('-', 2)
+    process = subprocess.Popen(["git", "describe", "--tags", "--long", "HEAD"],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               env=env)
+    output = process.communicate()[0].strip()
+    output = output.decode('utf-8')
+    parts = output.rsplit('-', 2)
     parts_length = len(parts)
     if parts_length == 3:
         d.update(dict(zip(keys, parts)))
     # get the _full_ hash of the current HEAD
-    output, _ = utils.execute(["git", "rev-parse", "HEAD"],
-                              env=env)
-
-    d['GIT_FULL_HASH'] = output.strip()
+    process = subprocess.Popen(["git", "rev-parse", "HEAD"],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               env=env)
+    output = process.communicate()[0].strip()
+    output = output.decode('utf-8')
+    d['GIT_FULL_HASH'] = output
     # set up the build string
     if key_name('NUMBER') in d and key_name('HASH') in d:
         d['GIT_BUILD_STR'] = '{}_{}'.format(d[key_name('NUMBER')],
@@ -101,12 +106,20 @@ def get_dict(m=None, prefix=None):
                 value = '<UNDEFINED>'
             d[var_name] = value
 
-    try:
-        d['CPU_COUNT'] = str(multiprocessing.cpu_count())
-    except NotImplementedError:
-        d['CPU_COUNT'] = "1"
+    if sys.platform == "darwin":
+        # multiprocessing.cpu_count() is not reliable on OSX
+        # See issue #645 on github.com/conda/conda-build
+        out, err = subprocess.Popen('sysctl -n hw.logicalcpu', shell=True, stdout=subprocess.PIPE).communicate()
+        d['CPU_COUNT'] = out.decode('utf-8').strip()
+    else:
+        try:
+            d['CPU_COUNT'] = str(multiprocessing.cpu_count())
+        except NotImplementedError:
+            d['CPU_COUNT'] = "1"
 
-    d.update(**get_git_build_info(d['SRC_DIR']))
+    if m.get_value('source/git_url'):
+        d.update(**get_git_build_info(d['SRC_DIR']))
+
     d['PATH'] = dict(os.environ)['PATH']
     d = prepend_bin_path(d, prefix)
 
@@ -143,6 +156,7 @@ def get_dict(m=None, prefix=None):
         d['PKG_NAME'] = m.name()
         d['PKG_VERSION'] = m.version()
         d['PKG_BUILDNUM'] = str(m.build_number())
+        d['PKG_BUILD_STRING'] = str(m.build_id())
         d['RECIPE_DIR'] = m.path
 
     return d

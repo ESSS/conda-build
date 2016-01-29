@@ -12,7 +12,9 @@ from collections import deque
 from glob import glob
 from locale import getpreferredencoding
 from os import listdir
+from os import environ as os_environ
 from os.path import exists, isdir, isfile, join
+import warnings
 
 import conda.config as config
 from conda.compat import PY3
@@ -283,14 +285,25 @@ def execute(args, parser):
     from conda_build.metadata import MetaData
 
     check_external()
-    channel_urls = args.channel or ()
+
+    # change globals in build module, see comment there as well
+    build.channel_urls = args.channel or ()
+    build.override_channels = args.override_channels
+    build.verbose = not args.quiet
 
     if on_win:
-        # needs to happen before any c extensions are imported that might be
-        # hard-linked by files in the trash. one of those is markupsafe, used
-        # by jinja2. see https://github.com/conda/conda-build/pull/520
-        assert 'markupsafe' not in sys.modules
-        delete_trash(None)
+        try:
+            # needs to happen before any c extensions are imported that might be
+            # hard-linked by files in the trash. one of those is markupsafe,
+            # used by jinja2. see https://github.com/conda/conda-build/pull/520
+            delete_trash(None)
+        except:
+            # when we can't delete the trash, don't crash on AssertionError,
+            # instead inform the user and try again next time.
+            # see https://github.com/conda/conda-build/pull/744
+            warnings.warn("Cannot delete trash; some c extension has been "
+                          "imported that is hard-linked by files in the trash. "
+                          "Will try again on next run.")
 
     if sys.platform == 'win32':
         all_versions['msvc'] = None
@@ -321,7 +334,9 @@ def execute(args, parser):
                 setattr(args, lang, versions)
             return
         else:
-            version = int(versions[0].replace('.', ''))
+            version = versions[0]
+            if lang in ('python', 'numpy'):
+                version = int(version.replace('.', ''))
             setattr(config, conda_version[lang], version)
         if not len(str(version)) in (2, 3) and lang in ['python', 'numpy']:
             if all_versions[lang]:
@@ -331,13 +346,18 @@ def execute(args, parser):
                 raise RuntimeError("%s must be major.minor, not %s" %
                     (conda_version[lang], version))
 
+    # Using --python, --numpy etc. is equivalent to using CONDA_PY, CONDA_NPY, etc.
+    # Auto-set those env variables
+    for var in conda_version.values():
+        if getattr(config, var):
+            # Set the env variable.
+            os_environ[var] = str(getattr(config, var))
+
     if args.skip_existing:
         if not isdir(config.bldpkgs_dir):
             makedirs(config.bldpkgs_dir)
         update_index(config.bldpkgs_dir)
-        index = build.get_build_index(clear_cache=True,
-            channel_urls=channel_urls,
-            override_channels=args.override_channels)
+        index = build.get_build_index(clear_cache=True)
 
     already_built = []
     to_build_recursive = []
@@ -383,12 +403,15 @@ def execute(args, parser):
                 if m.pkg_fn() in index or m.pkg_fn() in already_built:
                     print("%s is already built, skipping." % m.dist())
                     continue
+            if m.skip():
+                print("Skipped: The %s recipe defines build/skip for this "
+                      "configuration." % m.dist())
+                continue
             if args.output:
                 print(build.bldpkg_path(m))
                 continue
             elif args.test:
-                build.test(m, verbose=not args.quiet,
-                    channel_urls=channel_urls, override_channels=args.override_channels)
+                build.test(m, move_broken=False)
             elif args.source:
                 source.provide(m.path, m.get_section('source'))
                 print('Source tree in:', source.get_dir())
@@ -405,13 +428,8 @@ def execute(args, parser):
                 else:
                     post = None
                 try:
-                    if m.skip():
-                        print("Skipped: The %s recipe defines build/skip for this "
-                              "configuration." % m.dist())
-                        continue
-                    build.build(m, verbose=not args.quiet, post=post,
-                        channel_urls=channel_urls,
-                        override_channels=args.override_channels, include_recipe=args.include_recipe)
+                    build.build(m, post=post,
+                                include_recipe=args.include_recipe)
                 except (RuntimeError, SystemExit) as e:
                     error_str = str(e)
                     if error_str.startswith('No packages found') or error_str.startswith('Could not find some'):
@@ -474,8 +492,8 @@ def execute(args, parser):
                     continue
 
                 if not args.notest:
-                    build.test(m, verbose=not args.quiet,
-                        channel_urls=channel_urls, override_channels=args.override_channels)
+                    build.test(m)
+
                 binstar_upload = True
 
             if need_cleanup:

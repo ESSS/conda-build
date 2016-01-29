@@ -128,6 +128,14 @@ def ensure_valid_license_family(meta):
             "about/license_family '%s' not allowed. Allowed families are %s." %
             (license_family, comma_join(sorted(allowed_license_families)))))
 
+def ensure_valid_fields(meta):
+    try:
+        pin_depends = meta['build']['pin_depends']
+    except KeyError:
+        pin_depends = ''
+    if pin_depends not in ('', 'record', 'strict'):
+        raise RuntimeError("build/pin_depends cannot be '%s'" % pin_depends)
+
 def parse(data):
     data = select_lines(data, ns_cfg())
     res = yamlize(data)
@@ -154,10 +162,11 @@ def parse(data):
             res[section] = {}
         if res[section].get(key, None) is None:
             res[section][key] = []
+
     # ensure those are strings
-    for field in ('package/version', 'build/string', 'source/svn_rev',
-                  'source/git_tag', 'source/git_branch', 'source/md5',
-                  'source/git_rev', 'source/path'):
+    for field in ('package/version', 'build/string', 'build/pin_depends',
+                  'source/svn_rev', 'source/git_tag', 'source/git_branch',
+                  'source/md5', 'source/git_rev', 'source/path'):
         section, key = field.split('/')
         if res.get(section) is None:
             res[section] = {}
@@ -188,6 +197,7 @@ def parse(data):
         elif val in falses:
             res[section][key] = False
 
+    ensure_valid_fields(res)
     ensure_valid_license_family(res)
     return sanitize(res)
 
@@ -247,7 +257,7 @@ def _git_clean(source_meta):
 FIELDS = {
     'package': ['name', 'version'],
     'source': ['fn', 'url', 'md5', 'sha1', 'sha256', 'path',
-               'git_url', 'git_tag', 'git_branch', 'git_rev',
+               'git_url', 'git_tag', 'git_branch', 'git_rev', 'git_depth',
                'hg_url', 'hg_tag',
                'svn_url', 'svn_rev', 'svn_ignore_externals',
                'patches'],
@@ -256,7 +266,9 @@ FIELDS = {
               'no_link', 'binary_relocation', 'script', 'noarch_python',
               'has_prefix_files', 'binary_has_prefix_files', 'script_env',
               'detect_binary_files_with_prefix', 'rpaths',
-              'always_include_files', 'skip', 'msvc_compiler'],
+              'always_include_files', 'skip', 'msvc_compiler',
+              'pin_depends' # pin_depends is experimental still
+             ],
     'requirements': ['build', 'run', 'conflicts'],
     'app': ['entry', 'icon', 'summary', 'type', 'cli_opts',
             'own_environment'],
@@ -273,49 +285,6 @@ def check_bad_chrs(s, field):
     for c in bad_chrs:
         if c in s:
             sys.exit("Error: bad character '%s' in %s: %s" % (c, field, s))
-
-
-def get_contents(meta_path):
-    '''
-    Get the contents of the [meta.yaml|conda.yaml] file.
-    If jinja is installed, then the template.render function is called
-    before standard conda macro processors
-    '''
-    try:
-        import jinja2
-    except ImportError:
-        print("There was an error importing jinja2.", file=sys.stderr)
-        print("Please run `conda install jinja2` to enable jinja template support", file=sys.stderr)
-        with open(meta_path) as fd:
-            return fd.read()
-
-    from conda_build.jinja_context import context_processor
-
-    path, filename = os.path.split(meta_path)
-    loaders = [# search relative to '<conda_root>/Lib/site-packages/conda_build/templates'
-               jinja2.PackageLoader('conda_build'),
-               # search relative to RECIPE_DIR
-               jinja2.FileSystemLoader(path)
-               ]
-
-    # search relative to current conda environment directory
-    conda_env_path = os.environ.get('CONDA_DEFAULT_ENV')  # path to current conda environment
-    if conda_env_path and os.path.isdir(conda_env_path):
-        conda_env_path = os.path.abspath(conda_env_path)
-        conda_env_path = conda_env_path.replace('\\', '/') # need unix-style path
-        env_loader = jinja2.FileSystemLoader(conda_env_path)
-        loaders.append(jinja2.PrefixLoader({'$CONDA_DEFAULT_ENV': env_loader}))
-
-    env = jinja2.Environment(loader=jinja2.ChoiceLoader(loaders), undefined=jinja2.StrictUndefined)
-    env.globals.update(ns_cfg())
-    env.globals.update(context_processor())
-
-    template = env.get_or_select_template(filename)
-
-    try:
-        return template.render(environment=env)
-    except jinja2.TemplateError as ex:
-        sys.exit("Error: Failed to parse jinja template in {}:\n{}".format(meta_path, ex.message))
 
 
 def handle_config_version(ms, ver):
@@ -359,15 +328,27 @@ class MetaData(object):
             if not isfile(self.meta_path):
                 sys.exit("Error: meta.yaml or conda.yaml not found in %s" % path)
 
-        self.parse_again()
+        # Start with bare-minimum contents so we can call environ.get_dict() with impunity
+        # We'll immediately replace these contents in parse_again()
+        self.meta = parse("package:\n"
+                          "  name: uninitialized")
 
-    def parse_again(self):
+        # This is the 'first pass' parse of meta.yaml, so not all variables are defined yet
+        # (e.g. GIT_FULL_HASH, etc. are undefined)
+        # Therefore, undefined jinja variables are permitted here
+        # In the second pass, we'll be more strict. See build.build()
+        self.parse_again(permit_undefined_jinja=True)
+
+    def parse_again(self, permit_undefined_jinja=False):
         """Redo parsing for key-value pairs that are not initialized in the
         first pass.
+
+        permit_undefined_jinja: If True, *any* use of undefined jinja variables will
+                                evaluate to an emtpy string, without emitting an error.
         """
         if not self.meta_path:
             return
-        self.meta = parse(get_contents(self.meta_path))
+        self.meta = parse(self._get_contents(permit_undefined_jinja))
 
         if (isfile(self.requirements_path) and
                    not self.meta['requirements']['run']):
@@ -573,6 +554,72 @@ class MetaData(object):
 
     def skip(self):
         return self.get_value('build/skip', False)
+
+    def _get_contents(self, permit_undefined_jinja):
+        '''
+        Get the contents of our [meta.yaml|conda.yaml] file.
+        If jinja is installed, then the template.render function is called
+        before standard conda macro processors.
+
+        permit_undefined_jinja: If True, *any* use of undefined jinja variables will
+                                evaluate to an emtpy string, without emitting an error.
+        '''
+        try:
+            import jinja2
+        except ImportError:
+            print("There was an error importing jinja2.", file=sys.stderr)
+            print("Please run `conda install jinja2` to enable jinja template support", file=sys.stderr)
+            with open(self.meta_path) as fd:
+                return fd.read()
+
+        from conda_build.jinja_context import context_processor
+
+        path, filename = os.path.split(self.meta_path)
+        loaders = [# search relative to '<conda_root>/Lib/site-packages/conda_build/templates'
+                   jinja2.PackageLoader('conda_build'),
+                   # search relative to RECIPE_DIR
+                   jinja2.FileSystemLoader(path)
+                   ]
+
+        # search relative to current conda environment directory
+        conda_env_path = os.environ.get('CONDA_DEFAULT_ENV')  # path to current conda environment
+        if conda_env_path and os.path.isdir(conda_env_path):
+            conda_env_path = os.path.abspath(conda_env_path)
+            conda_env_path = conda_env_path.replace('\\', '/') # need unix-style path
+            env_loader = jinja2.FileSystemLoader(conda_env_path)
+            loaders.append(jinja2.PrefixLoader({'$CONDA_DEFAULT_ENV': env_loader}))
+
+        undefined_type = jinja2.StrictUndefined
+        if permit_undefined_jinja:
+            class UndefinedNeverFail(jinja2.Undefined):
+                """
+                A class for Undefined jinja variables.
+                This is even less strict than the default jinja2.Undefined class,
+                because we permits things like {{ MY_UNDEFINED_VAR[:2] }} and {{ float(MY_UNDEFINED_VAR) }}.
+                This can mask lots of errors in jinja templates, so it should only be used for a first-pass
+                parse, when you plan on running a 'strict' second pass later.
+                """
+                __add__ = __radd__ = __mul__ = __rmul__ = __div__ = __rdiv__ = \
+                __truediv__ = __rtruediv__ = __floordiv__ = __rfloordiv__ = \
+                __mod__ = __rmod__ = __pos__ = __neg__ = __call__ = \
+                __getitem__ = __lt__ = __le__ = __gt__ = __ge__ = \
+                __complex__ = __pow__ = __rpow__ = \
+                    lambda *args, **kwargs: ''
+
+                __int__ = lambda _: 0
+                __float__ = lambda _: 0.0
+
+            undefined_type = UndefinedNeverFail
+
+        env = jinja2.Environment(loader=jinja2.ChoiceLoader(loaders), undefined=undefined_type)
+        env.globals.update(ns_cfg())
+        env.globals.update(context_processor(self, path))
+
+        try:
+            template = env.get_or_select_template(filename)
+            return template.render(environment=env)
+        except jinja2.TemplateError as ex:
+            sys.exit("Error: Failed to render jinja template in {}:\n{}".format(self.meta_path, ex.message))
 
     def __unicode__(self):
         '''

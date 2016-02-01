@@ -199,7 +199,8 @@ different sets of packages."""
             Please keep in mind that Python 2.* and all extensions are compiled
             with MSVC 2008 by default. If you wish to build anything with MSVC 2010,
             you will have to build all packages (including python) with the same version.""",
-            choices=['9.0', '10.0'],
+            choices=[90, 100],
+            type=int,
             metavar="MSVC_VER",
         )
 

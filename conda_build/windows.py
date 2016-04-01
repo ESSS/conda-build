@@ -148,7 +148,7 @@ def build(m):
             fo.write(msvc_env_cmd(override=m.get_value('build/msvc_compiler', None)))
             fo.write('\n')
             for kv in env.items():
-                fo.write('set %s=%s\n' % kv)
+                fo.write('set "%s=%s"\n' % kv)
             # more debuggable with echo on
             fo.write('@echo on\n')
             fo.write("set INCLUDE={};%INCLUDE%\n".format(env["LIBRARY_INC"]))

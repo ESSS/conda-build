@@ -66,6 +66,16 @@ def msvc_env_cmd(override=None):
         msvc_env_lines.append('set DISTUTILS_USE_SDK=1')
         msvc_env_lines.append('set MSSdk=1')
 
+    if version == '10.0-SDK':
+        # Special override to use the MSVC 2010 compiler (10.0) from Microsoft SDK 7.1
+        setenv = os.path.join(os.environ['ProgramFiles'], 'Microsoft SDKs', 'Windows', 'v7.1',
+            'Bin', 'SetEnv.Cmd')
+        if not isfile(setenv):
+            print("Warning: Couldn't find Visual Studio: %r" % setenv)
+            return ''
+        msvc_env_lines.append('call "%s" %s' % (setenv, '/x86' if cc.bits == 32 else '/x64'))
+        return '\n'.join(msvc_env_lines)
+
     vcvarsall = os.path.join(program_files,
                              r'Microsoft Visual Studio {version}'.format(version=version),
                              'VC', 'vcvarsall.bat')
@@ -125,7 +135,7 @@ def build(m, bld_bat):
         with open(bld_bat) as fi:
             data = fi.read()
         with open(join(src_dir, 'bld.bat'), 'w') as fo:
-            fo.write(msvc_env_cmd(override=m.get_value('build/msvc_compiler', None)))
+            fo.write(msvc_env_cmd(override=m.get_value('build/msvc_compiler', config.CONDA_MSVC_OVERRIDE)))
             fo.write('\n')
             # more debuggable with echo on
             fo.write('@echo on\n')

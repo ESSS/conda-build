@@ -20,9 +20,25 @@ if 'ProgramFiles(x86)' in os.environ:
 else:
     PROGRAM_FILES_PATH = os.environ['ProgramFiles']
 
-# Note that we explicitly want "Program Files" and not "Program Files (x86)"
-WIN_SDK_BAT_PATH = os.path.join(PROGRAM_FILES_PATH.replace(" (x86)", ""),
-                                'Microsoft SDKs', 'Windows', 'v7.1', 'Bin', 'SetEnv.cmd')
+# Attempt to load the SDK from the registry
+try:
+    import winreg
+except ImportError:
+    import _winreg as winreg
+
+reg_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+    r'SOFTWARE\Microsoft\Microsoft SDKs\Windows\v7.1', 0,
+    winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+try:
+    sdk_dir = winreg.QueryValueEx(reg_key, 'InstallationFolder')[0]
+except OSError:
+    # Fall back to default directory
+    # Note that we explicitly want "Program Files" and not "Program Files (x86)"
+    sdk_dir = os.path.join(PROGRAM_FILES_PATH.replace(" (x86)", ""), 'Microsoft SDKs', 'Windows', 'v7.1')
+finally:
+    winreg.CloseKey(reg_key)
+WIN_SDK_BAT_PATH = os.path.join(sdk_dir, 'Bin', 'SetEnv.Cmd')
+
 VS_TOOLS_PY_LOCAL_PATH = os.path.join(
     os.getenv('localappdata', os.path.abspath(os.sep)),
     'Programs', 'Common', 'Microsoft', 'Visual C++ for Python', '9.0',

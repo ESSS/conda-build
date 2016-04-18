@@ -68,8 +68,23 @@ def msvc_env_cmd(override=None):
 
     if version == '10.0-SDK':
         # Special override to use the MSVC 2010 compiler (10.0) from Microsoft SDK 7.1
-        setenv = os.path.join(os.environ['ProgramFiles'], 'Microsoft SDKs', 'Windows', 'v7.1',
-            'Bin', 'SetEnv.Cmd')
+        try:
+            import winreg
+        except ImportError:
+            import _winreg as winreg
+        
+        reg_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+            r'SOFTWARE\Microsoft\Microsoft SDKs\Windows\v7.1', 0,
+            winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+        try:
+            sdk_dir = winreg.QueryValueEx(reg_key, 'InstallationFolder')[0]
+        except OSError:
+            # Fall back to default directory
+            sdk_dir = os.path.join(os.environ['ProgramFiles'], 'Microsoft SDKs', 'Windows', 'v7.1')
+        finally:
+            winreg.CloseKey(reg_key)
+         
+        setenv = os.path.join(sdk_dir, 'Bin', 'SetEnv.Cmd')
         if not isfile(setenv):
             print("Warning: Couldn't find Visual Studio: %r" % setenv)
             return ''
